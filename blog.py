@@ -1,14 +1,25 @@
 import os
 import sys
 import sqlite3
+import argparse
+
+
+parser = argparse.ArgumentParser(description="This program deals with recipes.")
+
+parser.add_argument('database', nargs=1, default="")
+parser.add_argument('--ingredients', default="")
+parser.add_argument('--meals', default="")
+
+args = parser.parse_args()
+
 
 if len(sys.argv) > 1:
-    db_name = sys.argv[1]
+    db_name = args.database[0]
 else:
     db_name = 'food_blog.db'
 
-if os.path.exists(db_name):
-    os.remove(db_name)
+# if os.path.exists(db_name):
+#     os.remove(db_name)
 
 con = sqlite3.connect(db_name)
 
@@ -74,13 +85,15 @@ def stage1(_con):
     data = {"meals": ("breakfast", "brunch", "lunch", "supper"),
             "ingredients": ("milk", "cacao", "strawberry", "blueberry", "blackberry", "sugar"),
             "measures": ("ml", "g", "l", "cup", "tbsp", "tsp", "dsp", "")}
+    try:
+        for table, elements in data.items():
+            sql_query = f"insert into {table} ({table[:-1]}_name)  values (?);"
+            _con.executemany(sql_query, ((element, ) for element in elements))
 
-    for table, elements in data.items():
-        sql_query = f"insert into {table} ({table[:-1]}_name)  values (?);"
-        _con.executemany(sql_query, ((element, ) for element in elements))
-
-    _con.commit()
-    print("Tables were created!")
+        _con.commit()
+        print("Tables were created!")
+    except sqlite3.IntegrityError:
+        pass
 
 
 def stage4(_con):
@@ -116,15 +129,58 @@ def stage4(_con):
 
                 _con.execute("insert into quantity (quantity, recipe_id, measure_id, ingredient_id) values (?, ?, ?, ?)", (quantity, recipe_id, measure_id, ingredient_id))
 
-
-
         except ValueError:
             print("Enter integers separated by a space.")
     _con.commit()
     print("Recipes were added!")
 
 
-stage1(con)
-stage4(con)
-con.close()
+def get_name_id(_con, col, value):
+    id = _con.execute(f"select {col}_id from {col}s where {col}_name = '{value}';").fetchone()
+    return id[0]
 
+
+def stage5(_con):
+    ingredients = args.ingredients.split(",")
+    ing_names = ",".join(f"'{ingredient}'" for ingredient in ingredients)
+
+    meals = args.meals.split(",")
+    meal_names = ",".join(f"'{meal}'" for meal in meals)
+
+    def get_base_query(ingredient):
+        return f"""select q.recipe_id as recipe_id
+        from ingredients i
+        join quantity q on q.ingredient_id = i.ingredient_id
+        where i.ingredient_name = '{ingredient}'\n
+        """
+
+    ing_table = "INTERSECT\n".join(get_base_query(ingredient) for ingredient in ingredients)
+
+    meal_table = f"""select s.recipe_id as recipe_id, r.recipe_name
+        from serve s
+        join meals m on m.meal_id = s.meal_id
+        join recipes r on r.recipe_id = s.recipe_id
+        where m.meal_name in ({meal_names})
+    """
+    sql_query = f"""select recipe_name
+    from (
+    {ing_table}) ing
+    join (
+    {meal_table}
+    ) me on ing.recipe_id = me.recipe_id;
+    """
+    rec_names = _con.execute(sql_query).fetchall()
+    if rec_names:
+        print(f"Recipes selected for you: {', '.join(x[0] for x in rec_names)}")
+    else:
+        print("There are no such recipes in the database.")
+
+
+stage1(con)
+
+if args.ingredients and args.meals:
+    stage5(con) 
+else:
+    stage4(con)
+
+con.close()
